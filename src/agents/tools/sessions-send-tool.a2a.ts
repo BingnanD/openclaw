@@ -35,6 +35,7 @@ export async function runSessionsSendA2AFlow(params: {
   requesterChannel?: GatewayMessageChannel;
   roundOneReply?: string;
   waitRunId?: string;
+  callbackTo?: string;
 }) {
   const runContextId = params.waitRunId ?? "unknown";
   try {
@@ -59,6 +60,38 @@ export async function runSessionsSendA2AFlow(params: {
     }
     if (!latestReply) {
       return;
+    }
+
+    // If callbackTo is specified, directly forward the original reply to the target
+    // without going through the announce/summary flow
+    if (params.callbackTo) {
+      const [channel, ...rest] = params.callbackTo.split(":");
+      if (channel && rest.length > 0) {
+        try {
+          const announceTarget = await resolveAnnounceTarget({
+            sessionKey: params.targetSessionKey,
+            displayKey: params.displayKey,
+          });
+          await sessionsSendA2ADeps.callGateway({
+            method: "send",
+            params: {
+              to: rest.join(":"),
+              message: latestReply,
+              channel: channel,
+              accountId: announceTarget?.accountId,
+              idempotencyKey: crypto.randomUUID(),
+            },
+            timeoutMs: 10_000,
+          });
+          return; // Done, skip the rest of the announce flow
+        } catch (err) {
+          log.warn("sessions_send callbackTo delivery failed", {
+            runId: runContextId,
+            callbackTo: params.callbackTo,
+            error: formatErrorMessage(err),
+          });
+        }
+      }
     }
 
     const announceTarget = await resolveAnnounceTarget({
