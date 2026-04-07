@@ -1,6 +1,7 @@
 import { getChannelPlugin, normalizeChannelId } from "../../channels/plugins/index.js";
 import type { ChannelId } from "../../channels/plugins/types.js";
 import { getActivePluginChannelRegistryVersion } from "../../plugins/runtime.js";
+import { normalizePinnedTelegramGroupTarget } from "./telegram-group-targets.js";
 
 export function normalizeChannelTargetInput(raw: string): string {
   return raw.trim();
@@ -38,6 +39,13 @@ export function normalizeTargetForProvider(provider: string, raw?: string): stri
     return undefined;
   }
   const providerId = normalizeChannelId(provider);
+  const providerHint = provider.trim().toLowerCase();
+  if (providerId === "telegram" || providerHint === "telegram") {
+    const pinned = normalizePinnedTelegramGroupTarget(raw);
+    if (pinned) {
+      return pinned;
+    }
+  }
   const normalizer = providerId ? resolveTargetNormalizer(providerId) : undefined;
   const normalized = normalizer?.(raw) ?? fallback;
   return normalized || undefined;

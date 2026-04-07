@@ -1,14 +1,15 @@
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { logDebug, logWarn } from "../logger.js";
 import { loadEmbeddedPiMcpConfig } from "./embedded-pi-mcp.js";
 import {
-  describeStdioMcpServerLaunchConfig,
-  resolveStdioMcpServerLaunchConfig,
-} from "./mcp-stdio.js";
+  connectClientToMcpServer,
+  describeMcpServerLaunchConfig,
+  resolveMcpServerLaunchConfig,
+} from "./mcp-client-transports.js";
 import type { AnyAgentTool } from "./tools/common.js";
 
 type BundleMcpToolRuntime = {
@@ -19,7 +20,7 @@ type BundleMcpToolRuntime = {
 type BundleMcpSession = {
   serverName: string;
   client: Client;
-  transport: StdioClientTransport;
+  transport?: Transport & { close(): Promise<void> };
   detachStderr?: () => void;
 };
 
@@ -86,8 +87,7 @@ function toAgentToolResult(params: {
   };
 }
 
-function attachStderrLogging(serverName: string, transport: StdioClientTransport) {
-  const stderr = transport.stderr;
+function attachStderrLogging(serverName: string, stderr: NodeJS.ReadableStream | undefined) {
   if (!stderr || typeof stderr.on !== "function") {
     return undefined;
   }
@@ -116,7 +116,7 @@ function attachStderrLogging(serverName: string, transport: StdioClientTransport
 async function disposeSession(session: BundleMcpSession) {
   session.detachStderr?.();
   await session.client.close().catch(() => {});
-  await session.transport.close().catch(() => {});
+  await session.transport?.close().catch(() => {});
 }
 
 export async function createBundleMcpToolRuntime(params: {
@@ -144,20 +144,12 @@ export async function createBundleMcpToolRuntime(params: {
 
   try {
     for (const [serverName, rawServer] of Object.entries(loaded.mcpServers)) {
-      const launch = resolveStdioMcpServerLaunchConfig(rawServer);
+      const launch = resolveMcpServerLaunchConfig(rawServer);
       if (!launch.ok) {
         logWarn(`bundle-mcp: skipped server "${serverName}" because ${launch.reason}.`);
         continue;
       }
       const launchConfig = launch.config;
-
-      const transport = new StdioClientTransport({
-        command: launchConfig.command,
-        args: launchConfig.args,
-        env: launchConfig.env,
-        cwd: launchConfig.cwd,
-        stderr: "pipe",
-      });
       const client = new Client(
         {
           name: "openclaw-bundle-mcp",
@@ -168,12 +160,15 @@ export async function createBundleMcpToolRuntime(params: {
       const session: BundleMcpSession = {
         serverName,
         client,
-        transport,
-        detachStderr: attachStderrLogging(serverName, transport),
       };
 
       try {
-        await client.connect(transport);
+        const connected = await connectClientToMcpServer({
+          client,
+          config: launchConfig,
+        });
+        session.transport = connected.transport;
+        session.detachStderr = attachStderrLogging(serverName, connected.stderr);
         const listedTools = await listAllTools(client);
         sessions.push(session);
         for (const tool of listedTools) {
@@ -193,7 +188,7 @@ export async function createBundleMcpToolRuntime(params: {
             label: tool.title ?? tool.name,
             description:
               tool.description?.trim() ||
-              `Provided by bundle MCP server "${serverName}" (${describeStdioMcpServerLaunchConfig(launchConfig)}).`,
+              `Provided by bundle MCP server "${serverName}" (${connected.description}).`,
             parameters: tool.inputSchema,
             execute: async (_toolCallId, input) => {
               const result = (await client.callTool({
@@ -210,7 +205,7 @@ export async function createBundleMcpToolRuntime(params: {
         }
       } catch (error) {
         logWarn(
-          `bundle-mcp: failed to start server "${serverName}" (${describeStdioMcpServerLaunchConfig(launchConfig)}): ${String(error)}`,
+          `bundle-mcp: failed to start server "${serverName}" (${describeMcpServerLaunchConfig(launchConfig)}): ${String(error)}`,
         );
         await disposeSession(session);
       }

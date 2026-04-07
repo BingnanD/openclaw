@@ -15,6 +15,7 @@ type SessionsToolTestConfig = {
     agentToAgent: { enabled: boolean };
     sessions?: { visibility: "all" | "own" };
   };
+  bindings?: Array<{ agentId: string; match: { channel: string; accountId?: string } }>;
 };
 
 const loadConfigMock = vi.fn<() => SessionsToolTestConfig>(() => ({
@@ -37,6 +38,7 @@ let createSessionsListTool: typeof import("./sessions-list-tool.js").createSessi
 let createSessionsSendTool: typeof import("./sessions-send-tool.js").createSessionsSendTool;
 let resolveAnnounceTarget: (typeof import("./sessions-announce-target.js"))["resolveAnnounceTarget"];
 let setActivePluginRegistry: (typeof import("../../plugins/runtime.js"))["setActivePluginRegistry"];
+let runSessionsSendA2AFlowMock: ReturnType<typeof vi.fn>;
 const MAIN_AGENT_SESSION_KEY = "agent:main:main";
 const MAIN_AGENT_CHANNEL = "whatsapp";
 
@@ -60,6 +62,10 @@ async function loadFreshSessionsToolModulesForTest() {
   ({ createSessionsSendTool } = await import("./sessions-send-tool.js"));
   ({ resolveAnnounceTarget } = await import("./sessions-announce-target.js"));
   ({ setActivePluginRegistry } = await import("../../plugins/runtime.js"));
+  ({ runSessionsSendA2AFlow: runSessionsSendA2AFlowMock } =
+    (await import("./sessions-send-tool.a2a.js")) as unknown as {
+      runSessionsSendA2AFlow: ReturnType<typeof vi.fn>;
+    });
 }
 
 const installRegistry = async () => {
@@ -310,6 +316,45 @@ describe("sessions_list gating", () => {
     expect(callGatewayMock).toHaveBeenLastCalledWith({
       method: "chat.history",
       params: { sessionKey: "current", limit: 1 },
+    });
+  });
+});
+
+describe("sessions_send callback delivery", () => {
+  beforeEach(() => {
+    callGatewayMock.mockReset();
+    runSessionsSendA2AFlowMock.mockClear();
+    loadConfigMock.mockReturnValue({
+      session: { scope: "per-sender", mainKey: "main" },
+      tools: {
+        agentToAgent: { enabled: true },
+        sessions: { visibility: "all" },
+      },
+      bindings: [{ agentId: "worker", match: { channel: "telegram", accountId: "worker-acct" } }],
+    });
+  });
+
+  it("passes the target agent's bound Telegram account to callback delivery", async () => {
+    await withStubbedStateDir("openclaw-state-sessions-send-callback", async () => {
+      callGatewayMock
+        .mockResolvedValueOnce({ sessions: [{ key: "agent:worker:main" }] })
+        .mockResolvedValueOnce({ runId: "run-1" })
+        .mockResolvedValueOnce({ messages: [] })
+        .mockResolvedValueOnce({ status: "ok" })
+        .mockResolvedValueOnce({ messages: [] });
+
+      const tool = createMainSessionsSendTool();
+      await tool.execute("call1", {
+        sessionKey: "agent:worker:main",
+        message: "ping",
+        callbackTo: "telegram:-5016824167",
+      });
+    });
+    expect(runSessionsSendA2AFlowMock).toHaveBeenCalledTimes(1);
+    expect(runSessionsSendA2AFlowMock.mock.calls[0]?.[0]).toMatchObject({
+      targetSessionKey: "agent:worker:main",
+      callbackTo: "telegram:-5016824167",
+      callbackAccountId: "worker-acct",
     });
   });
 });

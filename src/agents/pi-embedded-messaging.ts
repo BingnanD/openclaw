@@ -8,7 +8,7 @@ export type MessagingToolSend = {
   threadId?: string;
 };
 
-const CORE_MESSAGING_TOOLS = new Set(["sessions_send", "message"]);
+const CORE_MESSAGING_TOOLS = new Set(["sessions_send", "coordination_dispatch", "message"]);
 
 // Provider docking: any plugin with `actions` opts into messaging tool handling.
 export function isMessagingTool(toolName: string): boolean {
@@ -25,6 +25,9 @@ export function isMessagingToolSendAction(
 ): boolean {
   const action = typeof args.action === "string" ? args.action.trim() : "";
   if (toolName === "sessions_send") {
+    return true;
+  }
+  if (toolName === "coordination_dispatch") {
     return true;
   }
   if (toolName === "message") {

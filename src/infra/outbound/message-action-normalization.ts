@@ -8,6 +8,7 @@ import {
 } from "../../utils/message-channel.js";
 import { applyTargetToParams } from "./channel-target.js";
 import { actionHasTarget, actionRequiresTarget } from "./message-action-spec.js";
+import { normalizeTargetForProvider } from "./target-normalization.js";
 
 export function normalizeMessageActionInput(params: {
   action: ChannelMessageActionName;
@@ -61,6 +62,15 @@ export function normalizeMessageActionInput(params: {
   if (!explicitChannel) {
     if (inferredChannel && isDeliverableMessageChannel(inferredChannel)) {
       normalizedArgs.channel = inferredChannel;
+    }
+  }
+
+  const resolvedChannel =
+    typeof normalizedArgs.channel === "string" ? normalizedArgs.channel.trim() : inferredChannel;
+  if (typeof normalizedArgs.target === "string" && resolvedChannel) {
+    const normalizedTarget = normalizeTargetForProvider(resolvedChannel, normalizedArgs.target);
+    if (normalizedTarget) {
+      normalizedArgs.target = normalizedTarget;
     }
   }
 

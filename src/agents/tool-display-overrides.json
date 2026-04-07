@@ -31,6 +31,18 @@
       "title": "Session Send",
       "detailKeys": ["label", "sessionKey", "agentId", "timeoutSeconds"]
     },
+    "coordination_dispatch": {
+      "emoji": "🧩",
+      "title": "Coordination",
+      "detailKeys": [
+        "agentId",
+        "coordinationId",
+        "mode",
+        "visibility",
+        "replyTarget",
+        "timeoutSeconds"
+      ]
+    },
     "sessions_history": {
       "emoji": "🧾",
       "title": "Session History",

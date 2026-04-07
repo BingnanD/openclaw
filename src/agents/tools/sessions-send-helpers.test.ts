@@ -97,4 +97,19 @@ describe("resolveAnnounceTargetFromKey", () => {
       threadId: "99",
     });
   });
+
+  it("parses bundled Telegram targets even without a Telegram plugin entry", () => {
+    setActivePluginRegistry(createTestRegistry([]));
+
+    expect(resolveAnnounceTargetFromKey("agent:main:telegram:group:-5265166007")).toEqual({
+      channel: "telegram",
+      to: "-5016824167",
+      threadId: undefined,
+    });
+    expect(resolveAnnounceTargetFromKey("agent:main:telegram:group:-100123:topic:77")).toEqual({
+      channel: "telegram",
+      to: "-100123",
+      threadId: "77",
+    });
+  });
 });

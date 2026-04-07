@@ -10,6 +10,7 @@ import type { ToolFsPolicy } from "./tool-fs-policy.js";
 import { createAgentsListTool } from "./tools/agents-list-tool.js";
 import { createCanvasTool } from "./tools/canvas-tool.js";
 import type { AnyAgentTool } from "./tools/common.js";
+import { createCoordinationDispatchTool } from "./tools/coordination-dispatch-tool.js";
 import { createCronTool } from "./tools/cron-tool.js";
 import { createGatewayTool } from "./tools/gateway-tool.js";
 import { createImageGenerateTool } from "./tools/image-generate-tool.js";
@@ -201,6 +202,13 @@ export function createOpenClawTools(
       callGateway: openClawToolsDeps.callGateway,
     }),
     createSessionsSendTool({
+      agentSessionKey: options?.agentSessionKey,
+      agentChannel: options?.agentChannel,
+      sandboxed: options?.sandboxed,
+      config: resolvedConfig,
+      callGateway: openClawToolsDeps.callGateway,
+    }),
+    createCoordinationDispatchTool({
       agentSessionKey: options?.agentSessionKey,
       agentChannel: options?.agentChannel,
       sandboxed: options?.sandboxed,

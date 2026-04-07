@@ -194,6 +194,130 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("Voice (TTS) is enabled.");
   });
 
+  it("adds StrawCollab coordination guidance when StrawCollab tools are available", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["strawcollab_get_agent_context", "strawcollab_create_task"],
+      toolSummaries: {
+        strawcollab_get_agent_context: "Fetch coordination context from StrawCollab",
+        strawcollab_create_task: "Create StrawCollab task",
+      },
+    });
+
+    expect(prompt).toContain("## StrawCollab Coordination");
+    expect(prompt).toContain("StrawCollab is the same system the user may call `阳光平台`");
+    expect(prompt).toContain("Treat StrawCollab as the source of truth");
+    expect(prompt).toContain("call `strawcollab_get_agent_context`");
+    expect(prompt).toContain(
+      "strawcollab_get_agent_context: Fetch coordination context from StrawCollab",
+    );
+  });
+
+  it("guides explicit delegation through sessions_send callback flows", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["strawcollab_get_agent_context", "sessions_send"],
+    });
+
+    expect(prompt).toContain("verify that delegate against StrawCollab context");
+    expect(prompt).toContain("use `sessions_send` to the named agent");
+    expect(prompt).toContain("use the `message` tool to post there");
+    expect(prompt).toContain("the exact external target and expected reporting format");
+  });
+
+  it("prefers coordination_dispatch for structured A2A coordination when available", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["strawcollab_get_agent_context", "sessions_send", "coordination_dispatch"],
+    });
+
+    expect(prompt).toContain("Agent-to-agent structured coordination");
+    expect(prompt).toContain("Do not use sessions_send for cross-agent delegation");
+    expect(prompt).toContain("use `coordination_dispatch`");
+    expect(prompt).toContain("dedicated coordination session");
+    expect(prompt).toContain("coordination session keys");
+  });
+
+  it("treats plain team-test requests as execution when sessions_send is available", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["sessions_send"],
+    });
+
+    expect(prompt).toContain("## Team Coordination");
+    expect(prompt).toContain("treat that as an execution request");
+    expect(prompt).toContain("Do not reply with a clarification menu");
+    expect(prompt).toContain(
+      "fall back to the current direct-report list from workspace memory/context",
+    );
+    expect(prompt).toContain(
+      "send the same short confirmation check to each current direct report",
+    );
+    expect(prompt).toContain("团队测试收到，我是<姓名>");
+    expect(prompt).toContain(
+      "always target each direct report's main session (`agent:<delegate>:main`)",
+    );
+    expect(prompt).toContain("longer `sessions_send.timeoutSeconds` window");
+    expect(prompt).toContain("Telegram 草帽量化群");
+    expect(prompt).toContain("telegram:-5016824167");
+    expect(prompt).toContain(
+      "do not rely on `sessions_send.callbackTo` for visible group confirmation",
+    );
+    expect(prompt).toContain(
+      "not to send an extra natural-language confirmation back through the same `sessions_send` run",
+    );
+    expect(prompt).toContain(
+      "keep tracking that run and report its status instead of redispatching",
+    );
+    expect(prompt).toContain(
+      "wait through the timeout window before declaring a delegate timed out",
+    );
+  });
+
+  it("guides team tests through coordination_dispatch when available", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["coordination_dispatch", "message"],
+    });
+
+    expect(prompt).toContain("For a plain team test, use `coordination_dispatch`");
+    expect(prompt).toContain("Do not use `sessions_send` for those delegate runs");
+    expect(prompt).toContain(
+      "target coordination session keys such as `agent:<delegate>:coord:<coordination_id>`",
+    );
+    expect(prompt).toContain("encode `visibility`, `replyTarget`, and `completionSignal`");
+    expect(prompt).toContain("set `noPrivateReply=true`");
+  });
+
+  it("guides team-test requests through StrawCollab delegate context", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["strawcollab_get_agent_context", "sessions_send"],
+    });
+
+    expect(prompt).toContain("test your team");
+    expect(prompt).toContain("测试一下你的团队");
+    expect(prompt).toContain("active_delegate_agent_ids");
+    expect(prompt).toContain("do not guess who is on the team from memory or chat history");
+    expect(prompt).toContain(
+      "send the same short verification instruction to each active delegate",
+    );
+    expect(prompt).toContain(
+      "always dispatch to each delegate's main session (`agent:<delegate>:main`)",
+    );
+    expect(prompt).toContain("post exactly one visible confirmation into `telegram:-5016824167`");
+    expect(prompt).toContain(
+      "do not count a private reply to your main session as sufficient completion",
+    );
+    expect(prompt).toContain(
+      "not to send an extra natural-language confirmation back through the same `sessions_send` run",
+    );
+    expect(prompt).toContain(
+      "continue tracking that run and report current status instead of starting a second overlapping team test",
+    );
+    expect(prompt).toContain("provide a short roll-up stating who replied, who did not");
+  });
+
   it("adds reasoning tag hint when enabled", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",
@@ -271,9 +395,8 @@ describe("buildAgentSystemPrompt", () => {
       toolNames: ["sessions_spawn", "subagents", "agents_list", "exec"],
     });
 
-    expect(prompt).toContain(
-      'For requests like "do this in codex/claude code/gemini", treat it as ACP harness intent',
-    );
+    expect(prompt).toContain('For requests like "do this in codex/claude code/cursor/gemini"');
+    expect(prompt).toContain("treat it as ACP harness intent");
     expect(prompt).toContain(
       'On Discord, default ACP harness requests to thread-bound persistent sessions (`thread: true`, `mode: "session"`)',
     );
@@ -293,7 +416,7 @@ describe("buildAgentSystemPrompt", () => {
     });
 
     expect(prompt).not.toContain(
-      'For requests like "do this in codex/claude code/gemini", treat it as ACP harness intent',
+      'For requests like "do this in codex/claude code/cursor/gemini", treat it as ACP harness intent',
     );
     expect(prompt).not.toContain('runtime="acp" requires `agentId`');
     expect(prompt).not.toContain("not ACP harness ids");
@@ -313,7 +436,7 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).not.toContain('runtime="acp" requires `agentId`');
     expect(prompt).not.toContain("ACP harness ids follow acp.allowedAgents");
     expect(prompt).not.toContain(
-      'For requests like "do this in codex/claude code/gemini", treat it as ACP harness intent',
+      'For requests like "do this in codex/claude code/cursor/gemini", treat it as ACP harness intent',
     );
     expect(prompt).not.toContain(
       'do not call `message` with `action=thread-create`; use `sessions_spawn` (`runtime: "acp"`, `thread: true`) as the single thread creation path',

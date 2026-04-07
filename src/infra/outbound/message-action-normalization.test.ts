@@ -177,4 +177,30 @@ describe("normalizeMessageActionInput", () => {
       }),
     ).toThrow(/requires a target/);
   });
+
+  it("rewrites deprecated telegram group aliases to the canonical group id", () => {
+    const normalized = normalizeMessageActionInput({
+      action: "send",
+      args: {
+        channel: "telegram",
+        target: "telegram:-5265166007",
+      },
+    });
+
+    expect(normalized.target).toBe("-5016824167");
+    expect(normalized.to).toBe("-5016824167");
+  });
+
+  it("rewrites deprecated telegram group names to the canonical group id", () => {
+    const normalized = normalizeMessageActionInput({
+      action: "send",
+      args: {
+        channel: "telegram",
+        target: "草帽研发群",
+      },
+    });
+
+    expect(normalized.target).toBe("-5016824167");
+    expect(normalized.to).toBe("-5016824167");
+  });
 });

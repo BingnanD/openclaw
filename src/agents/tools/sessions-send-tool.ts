@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawConfig } from "../../config/config.js";
 import { callGateway } from "../../gateway/call.js";
+import { buildChannelAccountBindings } from "../../routing/bindings.js";
 import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { SESSION_LABEL_MAX_LENGTH } from "../../sessions/session-label.js";
 import {
@@ -35,6 +36,10 @@ const SessionsSendToolSchema = Type.Object({
 
 type GatewayCaller = typeof callGateway;
 const SESSIONS_SEND_REPLY_HISTORY_LIMIT = 50;
+
+function isAgentSessionKey(value: string | undefined): boolean {
+  return typeof value === "string" && value.trim().startsWith("agent:");
+}
 
 function resolveLatestAssistantReplySnapshot(messages: unknown[]): {
   text?: string;
@@ -216,6 +221,7 @@ export function createSessionsSendTool(opts?: {
         sessionKey,
         alias,
         mainKey,
+        cfg,
         requesterInternalKey: effectiveRequesterKey,
         restrictToSpawned,
       });
@@ -243,6 +249,19 @@ export function createSessionsSendTool(opts?: {
       // Normalize sessionKey/sessionId input into a canonical session key.
       const resolvedKey = visibleSession.key;
       const displayKey = visibleSession.displayKey;
+      const requesterAgentId = resolveAgentIdFromSessionKey(effectiveRequesterKey);
+      const targetAgentId = isAgentSessionKey(resolvedKey)
+        ? resolveAgentIdFromSessionKey(resolvedKey)
+        : undefined;
+      if (targetAgentId && requesterAgentId && targetAgentId !== requesterAgentId) {
+        return jsonResult({
+          runId: crypto.randomUUID(),
+          status: "forbidden",
+          error:
+            "sessions_send is restricted to H2A/plain session messaging. Use coordination_dispatch for cross-agent coordination.",
+          sessionKey: displayKey,
+        });
+      }
       const timeoutSeconds =
         typeof params.timeoutSeconds === "number" && Number.isFinite(params.timeoutSeconds)
           ? Math.max(0, Math.floor(params.timeoutSeconds))
@@ -303,6 +322,7 @@ export function createSessionsSendTool(opts?: {
           roundOneReply,
           waitRunId,
           callbackTo: callbackToParam,
+          callbackAccountId: resolveBoundChannelAccountId(cfg, "telegram", resolvedKey),
         });
       };
 
@@ -408,4 +428,17 @@ export function createSessionsSendTool(opts?: {
       });
     },
   };
+}
+
+function resolveBoundChannelAccountId(
+  cfg: OpenClawConfig | undefined,
+  channel: string,
+  sessionKey: string,
+): string | undefined {
+  if (!cfg) {
+    return undefined;
+  }
+  const agentId = normalizeAgentId(resolveAgentIdFromSessionKey(sessionKey));
+  const accountIds = buildChannelAccountBindings(cfg).get(channel)?.get(agentId);
+  return accountIds?.[0];
 }

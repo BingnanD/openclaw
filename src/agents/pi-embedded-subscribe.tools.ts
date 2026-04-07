@@ -150,6 +150,7 @@ const TRUSTED_TOOL_RESULT_MEDIA = new Set([
   "process",
   "read",
   "session_status",
+  "coordination_dispatch",
   "sessions_history",
   "sessions_list",
   "sessions_send",

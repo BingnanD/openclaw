@@ -2,8 +2,10 @@ import {
   getChannelPlugin,
   normalizeChannelId as normalizeAnyChannelId,
 } from "../../channels/plugins/index.js";
+import { parseExplicitTargetForChannel } from "../../channels/plugins/target-parsing.js";
 import { normalizeChannelId as normalizeChatChannelId } from "../../channels/registry.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { normalizePinnedTelegramGroupTarget } from "../../infra/outbound/telegram-group-targets.js";
 
 const ANNOUNCE_SKIP_TOKEN = "ANNOUNCE_SKIP";
 const REPLY_SKIP_TOKEN = "REPLY_SKIP";
@@ -51,18 +53,27 @@ export function resolveAnnounceTargetFromKey(sessionKey: string): AnnounceTarget
   }
   const normalizedChannel = normalizeAnyChannelId(channelRaw) ?? normalizeChatChannelId(channelRaw);
   const channel = normalizedChannel ?? channelRaw.toLowerCase();
+  const canonicalId = channel === "telegram" ? (normalizePinnedTelegramGroupTarget(id) ?? id) : id;
   const plugin = normalizedChannel ? getChannelPlugin(normalizedChannel) : null;
-  const genericTarget = kind === "channel" ? `channel:${id}` : `group:${id}`;
+  const genericTarget = kind === "channel" ? `channel:${canonicalId}` : `group:${canonicalId}`;
+  const explicitParsed =
+    channel === "telegram"
+      ? parseExplicitTargetForChannel(channel, `${channel}:${genericTarget}`)
+      : null;
   const normalized =
+    explicitParsed?.to ??
     plugin?.messaging?.resolveSessionTarget?.({
       kind,
-      id,
+      id: canonicalId,
       threadId,
-    }) ?? plugin?.messaging?.normalizeTarget?.(genericTarget);
+    }) ??
+    plugin?.messaging?.normalizeTarget?.(genericTarget);
+  const resolvedThreadId =
+    explicitParsed?.threadId != null ? String(explicitParsed.threadId) : threadId;
   return {
     channel,
     to: normalized ?? (normalizedChannel ? genericTarget : id),
-    threadId,
+    threadId: resolvedThreadId,
   };
 }
 

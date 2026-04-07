@@ -1,13 +1,18 @@
 import crypto from "node:crypto";
+import { parseExplicitTargetForChannel } from "../../channels/plugins/target-parsing.js";
 import { callGateway } from "../../gateway/call.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { normalizeTargetForProvider } from "../../infra/outbound/target-normalization.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { parseAgentSessionKey } from "../../routing/session-key.js";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
+import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
 import { readLatestAssistantReply, runAgentStep } from "./agent-step.js";
 import { resolveAnnounceTarget } from "./sessions-announce-target.js";
 import {
   buildAgentToAgentAnnounceContext,
+  buildAgentToAgentMessageContext,
   buildAgentToAgentReplyContext,
   isAnnounceSkip,
   isReplySkip,
@@ -36,6 +41,7 @@ export async function runSessionsSendA2AFlow(params: {
   roundOneReply?: string;
   waitRunId?: string;
   callbackTo?: string;
+  callbackAccountId?: string;
 }) {
   const runContextId = params.waitRunId ?? "unknown";
   try {
@@ -65,9 +71,42 @@ export async function runSessionsSendA2AFlow(params: {
     // If callbackTo is specified, directly forward the original reply to the target
     // without going through the announce/summary flow
     if (params.callbackTo) {
+      const callbackSession = parseAgentSessionKey(params.callbackTo);
+      if (callbackSession) {
+        try {
+          await runAgentStep({
+            sessionKey: params.callbackTo,
+            message: latestReply,
+            extraSystemPrompt: buildAgentToAgentMessageContext({
+              requesterSessionKey: params.requesterSessionKey,
+              requesterChannel: params.requesterChannel,
+              targetSessionKey: params.displayKey,
+            }),
+            timeoutMs: params.announceTimeoutMs,
+            channel: INTERNAL_MESSAGE_CHANNEL,
+            lane: AGENT_LANE_NESTED,
+            sourceSessionKey: params.targetSessionKey,
+            sourceChannel: targetChannelFromSessionKey(params.targetSessionKey),
+            sourceTool: "sessions_send",
+          });
+          return;
+        } catch (err) {
+          log.warn("sessions_send callbackTo delivery failed", {
+            runId: runContextId,
+            callbackTo: params.callbackTo,
+            error: formatErrorMessage(err),
+          });
+        }
+      }
+
       const [channel, ...rest] = params.callbackTo.split(":");
       if (channel && rest.length > 0) {
         try {
+          const parsedTarget = parseExplicitTargetForChannel(channel, rest.join(":"));
+          const normalizedTarget = normalizeTargetForProvider(
+            channel,
+            parsedTarget?.to ?? rest.join(":"),
+          );
           const announceTarget = await resolveAnnounceTarget({
             sessionKey: params.targetSessionKey,
             displayKey: params.displayKey,
@@ -75,10 +114,14 @@ export async function runSessionsSendA2AFlow(params: {
           await sessionsSendA2ADeps.callGateway({
             method: "send",
             params: {
-              to: rest.join(":"),
+              to: normalizedTarget ?? parsedTarget?.to ?? rest.join(":"),
               message: latestReply,
               channel: channel,
-              accountId: announceTarget?.accountId,
+              accountId: params.callbackAccountId ?? announceTarget?.accountId,
+              threadId:
+                parsedTarget?.threadId != null
+                  ? String(parsedTarget.threadId)
+                  : announceTarget?.threadId,
               idempotencyKey: crypto.randomUUID(),
             },
             timeoutMs: 10_000,
@@ -170,6 +213,7 @@ export async function runSessionsSendA2AFlow(params: {
             message: announceReply.trim(),
             channel: announceTarget.channel,
             accountId: announceTarget.accountId,
+            threadId: announceTarget.threadId,
             idempotencyKey: crypto.randomUUID(),
           },
           timeoutMs: 10_000,
@@ -201,3 +245,12 @@ export const __testing = {
       : defaultSessionsSendA2ADeps;
   },
 };
+
+function targetChannelFromSessionKey(sessionKey: string): string | undefined {
+  const parsed = parseAgentSessionKey(sessionKey);
+  const first = parsed?.rest.split(":").filter(Boolean)[0];
+  if (!first || first === "main") {
+    return undefined;
+  }
+  return first;
+}

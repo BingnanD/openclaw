@@ -1,6 +1,10 @@
 import type { OpenClawConfig } from "../../config/config.js";
 import { callGateway } from "../../gateway/call.js";
-import { isAcpSessionKey, normalizeMainKey } from "../../routing/session-key.js";
+import {
+  isAcpSessionKey,
+  normalizeMainKey,
+  parseAgentSessionKey,
+} from "../../routing/session-key.js";
 import { looksLikeSessionId } from "../../sessions/session-id.js";
 
 type GatewayCaller = typeof callGateway;
@@ -16,6 +20,47 @@ let sessionsResolutionDeps: {
 function normalizeKey(value?: string) {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function resolveCanonicalAgentSessionKey(rawKey: string, cfg?: OpenClawConfig): string {
+  const parsed = parseAgentSessionKey(rawKey);
+  if (!parsed) {
+    return rawKey;
+  }
+  const requestedAgentId = parsed.agentId.trim();
+  if (!requestedAgentId) {
+    return rawKey;
+  }
+  const agents = Array.isArray(cfg?.agents?.list) ? cfg.agents.list : [];
+  if (agents.some((agent) => agent?.id === requestedAgentId)) {
+    return rawKey;
+  }
+  const canonical = agents.find((agent) => {
+    if (!agent || typeof agent !== "object") {
+      return false;
+    }
+    const candidates = new Set<string>();
+    if (typeof agent.id === "string" && agent.id.trim()) {
+      candidates.add(agent.id.trim());
+    }
+    if (typeof agent.name === "string" && agent.name.trim()) {
+      candidates.add(agent.name.trim());
+    }
+    const identityName =
+      typeof agent.identity === "object" &&
+      agent.identity &&
+      typeof agent.identity.name === "string"
+        ? agent.identity.name.trim()
+        : "";
+    if (identityName) {
+      candidates.add(identityName);
+    }
+    return candidates.has(requestedAgentId);
+  });
+  if (!canonical?.id || canonical.id === requestedAgentId) {
+    return rawKey;
+  }
+  return `agent:${canonical.id}:${parsed.rest}`;
 }
 
 export function resolveMainSessionAlias(cfg: OpenClawConfig) {
@@ -329,10 +374,11 @@ export async function resolveSessionReference(params: {
   sessionKey: string;
   alias: string;
   mainKey: string;
+  cfg?: OpenClawConfig;
   requesterInternalKey?: string;
   restrictToSpawned: boolean;
 }): Promise<SessionReferenceResolution> {
-  const rawInput = params.sessionKey.trim();
+  const rawInput = resolveCanonicalAgentSessionKey(params.sessionKey.trim(), params.cfg);
   if (rawInput === "current") {
     if (!params.restrictToSpawned) {
       const resolvedByKey = await resolveSessionKeyFromKey({

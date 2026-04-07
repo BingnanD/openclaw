@@ -220,6 +220,34 @@ describe("resolved session visibility checks", () => {
 });
 
 describe("resolveSessionReference", () => {
+  it("canonicalizes literal-name agent session keys to configured agent ids", async () => {
+    await expect(
+      resolveSessionReference({
+        sessionKey: "agent:陈思远:main",
+        alias: "main",
+        mainKey: "main",
+        cfg: {
+          agents: {
+            list: [
+              {
+                id: "chensiyuan",
+                name: "chensiyuan",
+                identity: { name: "陈思远" },
+              },
+            ],
+          },
+        } as OpenClawConfig,
+        requesterInternalKey: "agent:zhoujiming:main",
+        restrictToSpawned: false,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      key: "agent:chensiyuan:main",
+      displayKey: "agent:chensiyuan:main",
+      resolvedViaSessionId: false,
+    });
+  });
+
   it("prefers a literal current session key before alias fallback", async () => {
     callGatewayMock.mockResolvedValueOnce({ key: "current" });
 

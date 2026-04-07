@@ -118,7 +118,8 @@ function buildMessagingSection(params: {
   return [
     "## Messaging",
     "- Reply in current session → automatically routes to the source channel (Signal, Telegram, etc.)",
-    "- Cross-session messaging → use sessions_send(sessionKey, message)",
+    "- Human-to-agent cross-session messaging → use sessions_send(sessionKey, message)",
+    "- Agent-to-agent structured coordination → use coordination_dispatch(...). Do not use sessions_send for cross-agent delegation.",
     "- Sub-agent orchestration → use subagents(action=list|steer|kill)",
     `- Runtime-generated completion events may ask for a user update. Rewrite those in your normal assistant voice and send the update (do not forward raw internal metadata or default to ${SILENT_REPLY_TOKEN}).`,
     "- Never use exec/curl for provider messaging; OpenClaw handles all routing internally.",
@@ -127,7 +128,7 @@ function buildMessagingSection(params: {
           "",
           "### message tool",
           "- Use `message` for proactive sends + channel actions (polls, reactions, etc.).",
-          "- For `action=send`, include `to` and `message`.",
+          "- For `action=send`, include `target` and `message`.",
           `- If multiple channels are configured, pass \`channel\` (${params.messageChannelOptions}).`,
           `- If you use \`message\` (\`action=send\`) to deliver your user-visible reply, respond with ONLY: ${SILENT_REPLY_TOKEN} (avoid duplicate replies).`,
           params.inlineButtonsEnabled
@@ -153,6 +154,95 @@ function buildVoiceSection(params: { isMinimal: boolean; ttsHint?: string }) {
     return [];
   }
   return ["## Voice (TTS)", hint, ""];
+}
+
+function buildStrawCollabSection(params: { isMinimal: boolean; availableTools: Set<string> }) {
+  if (params.isMinimal) {
+    return [];
+  }
+  const hasStrawCollabContextTool =
+    params.availableTools.has("strawcollab_get_agent_context") ||
+    params.availableTools.has("strawcollab_get_my_tasks") ||
+    params.availableTools.has("strawcollab_create_task");
+  if (!hasStrawCollabContextTool) {
+    return [];
+  }
+  const hasSessionsSend = params.availableTools.has("sessions_send");
+  const hasCoordinationDispatch = params.availableTools.has("coordination_dispatch");
+  return [
+    "## StrawCollab Coordination",
+    "- StrawCollab is the same system the user may call `阳光平台`; treat those names as interchangeable.",
+    "- Treat StrawCollab as the source of truth for coordinator/delegate relationships, task hierarchy, and task status.",
+    "- Before delegating, deciding who should own work, or reporting status, call `strawcollab_get_agent_context` when available instead of guessing from chat history.",
+    "- Use StrawCollab task tools to persist execution state; do not rely on Telegram/group messages as the only record of progress.",
+    "- If StrawCollab says you have no active delegates, say that clearly and continue yourself or escalate; do not invent sub-agents.",
+    ...(hasSessionsSend || hasCoordinationDispatch
+      ? [
+          "- When the user explicitly names a delegate (for example: let Brook handle X), verify that delegate against StrawCollab context before sending work.",
+          hasCoordinationDispatch
+            ? "- For explicit A2A delegation, use `coordination_dispatch` to create a dedicated coordination session. Do not use `sessions_send` for cross-agent work."
+            : "- For explicit delegation, use `sessions_send` to the named agent instead of replying with instructions only.",
+          "- If the user asks for progress to appear in a Telegram/group chat, explicitly tell the delegate to use the `message` tool to post there; do not rely on implicit callback forwarding for visible Telegram progress.",
+          "- In delegation messages, tell the delegate the exact external target and expected reporting format instead of assuming a callback route will infer it.",
+          "- If the user says things like `test your team`, `test your delegates`, or `测试一下你的团队`, treat that as a coordination test request rather than a vague brainstorming prompt.",
+          "- For a team test, first call `strawcollab_get_agent_context` to get `active_delegate_agent_ids`; do not guess who is on the team from memory or chat history when StrawCollab is available.",
+          "- If `active_delegate_agent_ids` is empty, say that you currently have no active delegates instead of inventing a team test.",
+          hasCoordinationDispatch
+            ? "- For a team test without explicitly named delegates, open one `coordination_dispatch` per active delegate and encode the delegate-specific task in the coordination payload instead of sending loose natural-language instructions."
+            : "- For a team test without explicitly named delegates, send the same short verification instruction to each active delegate via `sessions_send` and ask each delegate to reply with one concise confirmation.",
+          hasCoordinationDispatch
+            ? "- For a team test, use coordination session keys (for example `agent:<delegate>:coord:<id>`) instead of reusing `agent:<delegate>:main`."
+            : "- For a team test, always dispatch to each delegate's main session (`agent:<delegate>:main`) instead of choosing Telegram/group sessions as the work target.",
+          "- If the team test is happening in Telegram 草帽量化群, require each delegate to post exactly one visible confirmation into `telegram:-5016824167` with the `message` tool.",
+          "- When telling delegates how to use `message`, specify the exact call shape: `action=send`, `channel=telegram`, `target=telegram:-5016824167`, and the one-line confirmation text.",
+          "- In that Telegram-group case, do not count a private reply to your main session as sufficient completion.",
+          "- In that Telegram-group case, do not depend on `sessions_send.callbackTo` for the visible confirmation path; the delegate must post directly with `message` to `telegram:-5016824167`.",
+          "- In that Telegram-group case, tell each delegate not to send an extra natural-language confirmation back through the same `sessions_send` run after posting to the group; one visible group message is the completion signal.",
+          "- If the user did not specify where team-test replies should appear and the current conversation is not Telegram 草帽量化群, you may use `sessions_send.callbackTo` for internal reply routing; otherwise have delegates reply back to you and then summarize the result.",
+          "- If a team test is already in progress, continue tracking that run and report current status instead of starting a second overlapping team test.",
+          "- After the delegates respond, provide a short roll-up stating who replied, who did not, and whether the coordination test passed.",
+        ]
+      : []),
+    "",
+  ];
+}
+
+function buildTeamCoordinationSection(params: { isMinimal: boolean; availableTools: Set<string> }) {
+  const hasSessionsSend = params.availableTools.has("sessions_send");
+  const hasCoordinationDispatch = params.availableTools.has("coordination_dispatch");
+  if (params.isMinimal || (!hasSessionsSend && !hasCoordinationDispatch)) {
+    return [];
+  }
+  return [
+    "## Team Coordination",
+    "- If the user says `test your team`, `test your delegates`, or `测试一下你的团队`, treat that as an execution request, not a brainstorming request.",
+    "- Do not reply with a clarification menu like `which aspect do you want to test` unless the user explicitly asked for a custom test plan.",
+    "- When StrawCollab delegate tools are unavailable, fall back to the current direct-report list from workspace memory/context instead of refusing or guessing random coworkers.",
+    hasCoordinationDispatch
+      ? "- For a plain team test, use `coordination_dispatch` to start one dedicated coordination session per selected delegate. Do not use `sessions_send` for those delegate runs."
+      : "- For a plain team test, send the same short confirmation check to each current direct report via `sessions_send`.",
+    "- Default confirmation check: ask each direct report to send one concise reply such as `团队测试收到，我是<姓名>`.",
+    hasCoordinationDispatch
+      ? "- For a team test, target coordination session keys such as `agent:<delegate>:coord:<coordination_id>` instead of main or Telegram/group sessions."
+      : "- For a team test, always target each direct report's main session (`agent:<delegate>:main`) instead of picking Telegram/group sessions as the dispatch target.",
+    hasCoordinationDispatch
+      ? "- For team-test dispatches, encode `visibility`, `replyTarget`, and `completionSignal` in the coordination payload so delegates do not have to infer where to answer."
+      : "- For team-test dispatches, use a longer `sessions_send.timeoutSeconds` window (for example 60) so you do not mark a slow-but-valid reply as failed too early.",
+    "- If the current conversation is Telegram 草帽量化群, require each direct report to post exactly one visible confirmation into `telegram:-5016824167` with the `message` tool.",
+    "- When you instruct a direct report to use `message`, tell them the exact call shape: `action=send`, `channel=telegram`, `target=telegram:-5016824167`, plus the one-line confirmation text.",
+    hasCoordinationDispatch
+      ? "- In that Telegram-group case, put `replyTarget=telegram:-5016824167` and `visibility=public` into the coordination payload; the delegate must then use `message(...)` for the visible confirmation."
+      : "- In that Telegram-group case, do not rely on `sessions_send.callbackTo` for visible group confirmation; explicitly require the direct report to use `message(action=send, channel=telegram, target=telegram:-5016824167, message=...)`.",
+    hasCoordinationDispatch
+      ? "- In that Telegram-group case, set `noPrivateReply=true`; the visible group post is the completion signal."
+      : "- In that Telegram-group case, tell the direct report not to send an extra natural-language confirmation back through the same `sessions_send` run after posting to the group; the visible group post is the confirmation.",
+    hasCoordinationDispatch
+      ? "- If the current conversation has a reply target and is not Telegram 草帽量化群, encode that target in the coordination payload; otherwise have delegates reply to you and summarize the result."
+      : "- If the current conversation has a reply target and is not Telegram 草帽量化群, you may route delegate replies there with `sessions_send.callbackTo`; otherwise have delegates reply to you and summarize the result.",
+    "- If a team test is already running, keep tracking that run and report its status instead of redispatching the same delegates a second time.",
+    "- After dispatching, send a short execution update; wait through the timeout window before declaring a delegate timed out, then send a short roll-up stating who replied, who did not, and whether the test passed.",
+    "",
+  ];
 }
 
 function buildDocsSection(params: { docsPath?: string; isMinimal: boolean; readToolName: string }) {
@@ -248,6 +338,8 @@ export function buildAgentSystemPrompt(params: {
     sessions_list: "List other sessions (incl. sub-agents) with filters/last",
     sessions_history: "Fetch history for another session/sub-agent",
     sessions_send: "Send a message to another session/sub-agent",
+    coordination_dispatch:
+      "Start a structured agent-to-agent coordination session with protocol metadata",
     sessions_spawn: acpSpawnRuntimeEnabled
       ? 'Spawn an isolated sub-agent or ACP coding session (runtime="acp" requires `agentId` unless `acp.defaultAgent` is configured; ACP harness ids follow acp.allowedAgents, not agents_list)'
       : "Spawn an isolated sub-agent session",
@@ -280,6 +372,7 @@ export function buildAgentSystemPrompt(params: {
     "sessions_list",
     "sessions_history",
     "sessions_send",
+    "coordination_dispatch",
     "subagents",
     "session_status",
     "image",
@@ -561,6 +654,14 @@ export function buildAgentSystemPrompt(params: {
       inlineButtonsEnabled,
       runtimeChannel,
       messageToolHints: params.messageToolHints,
+    }),
+    ...buildTeamCoordinationSection({
+      isMinimal,
+      availableTools,
+    }),
+    ...buildStrawCollabSection({
+      isMinimal,
+      availableTools,
     }),
     ...buildVoiceSection({ isMinimal, ttsHint: params.ttsHint }),
   ];

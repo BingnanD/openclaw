@@ -138,6 +138,14 @@ const CORE_TOOL_DEFINITIONS: CoreToolDefinition[] = [
     includeInOpenClawGroup: true,
   },
   {
+    id: "coordination_dispatch",
+    label: "coordination_dispatch",
+    description: "Dispatch to coordination session",
+    sectionId: "sessions",
+    profiles: ["coding", "messaging"],
+    includeInOpenClawGroup: true,
+  },
+  {
     id: "sessions_spawn",
     label: "sessions_spawn",
     description: "Spawn sub-agent",

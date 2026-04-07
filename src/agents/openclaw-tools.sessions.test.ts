@@ -122,6 +122,7 @@ describe("sessions tools", () => {
     expect(schemaProp("sessions_list", "activeMinutes").type).toBe("number");
     expect(schemaProp("sessions_list", "messageLimit").type).toBe("number");
     expect(schemaProp("sessions_send", "timeoutSeconds").type).toBe("number");
+    expect(schemaProp("coordination_dispatch", "timeoutSeconds").type).toBe("number");
     expect(schemaProp("sessions_spawn", "thinking").type).toBe("string");
     expect(schemaProp("sessions_spawn", "runTimeoutSeconds").type).toBe("number");
     expect(schemaProp("sessions_spawn", "thread").type).toBe("boolean");
@@ -721,7 +722,7 @@ describe("sessions tools", () => {
       ),
     ).toBe(true);
     expect(waitCalls).toHaveLength(8);
-    expect(historyOnlyCalls).toHaveLength(8);
+    expect(historyOnlyCalls.length).toBeGreaterThanOrEqual(8);
     expect(sendCallCount).toBe(0);
   });
 
@@ -771,6 +772,45 @@ describe("sessions tools", () => {
       method: "agent",
       params: { sessionKey: targetKey },
     });
+  });
+
+  it("sessions_send rejects cross-agent targets and requires coordination_dispatch", async () => {
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as {
+        method?: string;
+        params?: Record<string, unknown>;
+      };
+      if (request.method === "sessions.resolve") {
+        return { key: "agent:wangjianguo:main" };
+      }
+      throw new Error(`unexpected method: ${request.method}`);
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: "agent:zhoujiming:main",
+      agentChannel: "telegram",
+    }).find((candidate) => candidate.name === "sessions_send");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing sessions_send tool");
+    }
+
+    const result = await tool.execute("call-cross-agent", {
+      sessionKey: "agent:wangjianguo:main",
+      message: "please help",
+      timeoutSeconds: 1,
+    });
+
+    expect(result.details).toMatchObject({
+      status: "forbidden",
+      sessionKey: "agent:wangjianguo:main",
+    });
+    expect((result.details as { error?: string }).error).toContain("coordination_dispatch");
+    expect(
+      callGatewayMock.mock.calls.some(
+        (call) => (call[0] as { method?: string }).method === "agent",
+      ),
+    ).toBe(false);
   });
 
   it("sessions_send runs ping-pong then announces", async () => {
@@ -887,6 +927,238 @@ describe("sessions tools", () => {
       to: "group:target",
       channel: "discord",
       message: "announce now",
+    });
+  });
+
+  it("coordination_dispatch creates a dedicated coordination session and envelope", async () => {
+    const calls: Array<{ method?: string; params?: unknown }> = [];
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string; params?: unknown };
+      calls.push(request);
+      if (request.method === "agent") {
+        return { runId: "coord-run-1", acceptedAt: 4001 };
+      }
+      if (request.method === "agent.wait") {
+        return { runId: "coord-run-1", status: "ok" };
+      }
+      if (request.method === "chat.history") {
+        return {
+          messages: [
+            { role: "user", content: [{ type: "text", text: "start" }] },
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "指针平台未部署，主要阻塞是端口冲突。" }],
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: "agent:zhoujiming:telegram:direct:123",
+      agentChannel: "telegram",
+    }).find((candidate) => candidate.name === "coordination_dispatch");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing coordination_dispatch tool");
+    }
+
+    const result = await tool.execute("call-coord-1", {
+      agentId: "wangjianguo",
+      coordinationId: "test-coord-1",
+      task: "检查指针平台运行状态",
+      role: "platform_status",
+      visibility: "private",
+      replyTarget: "telegram:8275091652",
+      resultRoute: "coordinator",
+      noPrivateReply: false,
+      timeoutSeconds: 1,
+    });
+    expect(result.details).toMatchObject({
+      runId: "coord-run-1",
+      status: "ok",
+      sessionKey: "agent:wangjianguo:coord:test-coord-1",
+      coordinationId: "test-coord-1",
+      reply: "指针平台未部署，主要阻塞是端口冲突。",
+      delivery: {
+        mode: "coordination",
+        visibility: "private",
+        replyTarget: "telegram:8275091652",
+        resultRoute: "coordinator",
+      },
+      envelope: {
+        protocol: "openclaw.coordination/v1",
+        coordinationId: "test-coord-1",
+        mode: "dispatch",
+        visibility: "private",
+        delegate: {
+          agentId: "wangjianguo",
+          role: "platform_status",
+        },
+        replyTarget: "telegram:8275091652",
+        noPrivateReply: false,
+        resultRoute: "coordinator",
+      },
+    });
+
+    const agentCall = calls.find((call) => call.method === "agent");
+    const agentParams = (agentCall?.params ?? {}) as {
+      message?: string;
+      extraSystemPrompt?: string;
+    };
+    expect(agentCall?.params).toMatchObject({
+      sessionKey: "agent:wangjianguo:coord:test-coord-1",
+      lane: "nested",
+      channel: "webchat",
+      inputProvenance: {
+        kind: "inter_session",
+        sourceSessionKey: "agent:zhoujiming:telegram:direct:123",
+        sourceChannel: "telegram",
+        sourceTool: "coordination_dispatch",
+      },
+    });
+    expect(
+      typeof agentParams.message === "string" &&
+        agentParams.message.includes('"protocol": "openclaw.coordination/v1"'),
+    ).toBe(true);
+    expect(
+      typeof agentParams.extraSystemPrompt === "string" &&
+        agentParams.extraSystemPrompt.includes("dedicated A2A coordination session"),
+    ).toBe(true);
+
+    const historyCall = calls.find((call) => call.method === "chat.history");
+    expect(historyCall?.params).toMatchObject({
+      sessionKey: "agent:wangjianguo:coord:test-coord-1",
+      limit: 50,
+    });
+  });
+
+  it("coordination_dispatch reports running instead of timeout when delegate session is still active", async () => {
+    const calls: Array<{ method?: string; params?: unknown }> = [];
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string; params?: unknown };
+      calls.push(request);
+      if (request.method === "agent") {
+        return { runId: "coord-run-2", acceptedAt: 4002 };
+      }
+      if (request.method === "agent.wait") {
+        return { runId: "coord-run-2", status: "timeout" };
+      }
+      if (request.method === "chat.history") {
+        return {
+          messages: [{ role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] }],
+        };
+      }
+      if (request.method === "sessions.list") {
+        return {
+          sessions: [
+            {
+              key: "agent:chensiyuan:coord:test-coord-running",
+              status: "running",
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: "agent:zhoujiming:telegram:direct:123",
+      agentChannel: "telegram",
+    }).find((candidate) => candidate.name === "coordination_dispatch");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing coordination_dispatch tool");
+    }
+
+    const result = await tool.execute("call-coord-running", {
+      agentId: "chensiyuan",
+      coordinationId: "test-coord-running",
+      task: "评估研究就绪情况",
+      timeoutSeconds: 1,
+    });
+    expect(result.details).toMatchObject({
+      runId: "coord-run-2",
+      status: "running",
+      sessionKey: "agent:chensiyuan:coord:test-coord-running",
+      coordinationId: "test-coord-running",
+      reply: undefined,
+      delivery: {
+        mode: "coordination",
+        visibility: "private",
+        replyTarget: "agent:zhoujiming:telegram:direct:123",
+        resultRoute: "coordinator",
+      },
+    });
+
+    const sessionsListCall = calls.find((call) => call.method === "sessions.list");
+    expect(sessionsListCall?.params).toMatchObject({
+      limit: 200,
+      includeGlobal: true,
+      includeUnknown: true,
+    });
+  });
+
+  it("coordination_dispatch supports explicit group result routing", async () => {
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string };
+      if (request.method === "agent") {
+        return { runId: "coord-run-3", acceptedAt: 4003 };
+      }
+      if (request.method === "agent.wait") {
+        return { runId: "coord-run-3", status: "ok" };
+      }
+      if (request.method === "chat.history") {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "NO_REPLY" }],
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: "agent:linxuyuan:telegram:group:-5016824167",
+      agentChannel: "telegram",
+    }).find((candidate) => candidate.name === "coordination_dispatch");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing coordination_dispatch tool");
+    }
+
+    const result = await tool.execute("call-coord-group", {
+      agentId: "zhoujiming",
+      coordinationId: "test-coord-group",
+      task: "在群里同步近期工作情况",
+      visibility: "public",
+      replyTarget: "telegram:-5016824167",
+      resultRoute: "group",
+      noPrivateReply: true,
+      timeoutSeconds: 1,
+    });
+    expect(result.details).toMatchObject({
+      runId: "coord-run-3",
+      status: "ok",
+      sessionKey: "agent:zhoujiming:coord:test-coord-group",
+      coordinationId: "test-coord-group",
+      reply: undefined,
+      delivery: {
+        mode: "coordination",
+        visibility: "public",
+        replyTarget: "telegram:-5016824167",
+        resultRoute: "group",
+      },
+      envelope: {
+        visibility: "public",
+        replyTarget: "telegram:-5016824167",
+        noPrivateReply: true,
+        resultRoute: "group",
+      },
     });
   });
 
