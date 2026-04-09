@@ -297,6 +297,25 @@ export function createEmbeddedRunAuthController(params: {
     }
     let runtimeAuthHandled = false;
     const runtimeModel = params.getRuntimeModel();
+    if (apiKeyInfo.apiKey) {
+      const runtimeHeaders = {
+        ...runtimeModel.headers,
+        Authorization: `Bearer ${apiKeyInfo.apiKey}`,
+      };
+      params.setRuntimeModel({
+        ...runtimeModel,
+        apiKey: apiKeyInfo.apiKey,
+        headers: runtimeHeaders,
+      } as Model<Api>);
+      params.setEffectiveModel({
+        ...params.getEffectiveModel(),
+        apiKey: apiKeyInfo.apiKey,
+        headers: {
+          ...params.getEffectiveModel().headers,
+          Authorization: `Bearer ${apiKeyInfo.apiKey}`,
+        },
+      } as Model<Api>);
+    }
     const preparedAuth = await prepareProviderRuntimeAuth({
       provider: runtimeModel.provider,
       config: params.config,

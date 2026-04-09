@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import os from "node:os";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage, StreamFn } from "@mariozechner/pi-agent-core";
 import { streamSimple } from "@mariozechner/pi-ai";
 import {
   createAgentSession,
@@ -213,6 +213,46 @@ export {
 } from "./attempt.tool-call-normalization.js";
 
 const MAX_BTW_SNAPSHOT_MESSAGES = 100;
+
+function extractBearerApiKey(headers: Record<string, unknown> | undefined): string | undefined {
+  const authorization = headers?.Authorization;
+  if (typeof authorization !== "string") {
+    return undefined;
+  }
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || undefined;
+}
+
+export function injectRequestAuthIntoStreamFn(streamFn: StreamFn): StreamFn {
+  return (model, context, options) => {
+    const modelHeaders =
+      model && typeof model === "object" && !Array.isArray(model)
+        ? ((model as { headers?: Record<string, unknown> }).headers ?? undefined)
+        : undefined;
+    const modelApiKey =
+      model && typeof model === "object" && !Array.isArray(model)
+        ? ((model as { apiKey?: unknown }).apiKey ?? undefined)
+        : undefined;
+    const injectedApiKey =
+      options?.apiKey ||
+      (typeof modelApiKey === "string" ? modelApiKey : undefined) ||
+      extractBearerApiKey(modelHeaders);
+    const injectedHeaders =
+      modelHeaders || options?.headers
+        ? (Object.fromEntries(
+            Object.entries({
+              ...modelHeaders,
+              ...options?.headers,
+            }).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+          ) as Record<string, string>)
+        : options?.headers;
+    return streamFn(model, context, {
+      ...options,
+      apiKey: injectedApiKey,
+      headers: injectedHeaders,
+    });
+  };
+}
 
 function summarizeMessagePayload(msg: AgentMessage): { textChars: number; imageBlocks: number } {
   const content = (msg as { content?: unknown }).content;
@@ -875,6 +915,7 @@ export async function runEmbeddedAttempt(
         // Force a stable streamFn reference so vitest can reliably mock @mariozechner/pi-ai.
         activeSession.agent.streamFn = streamSimple;
       }
+      activeSession.agent.streamFn = injectRequestAuthIntoStreamFn(activeSession.agent.streamFn);
 
       const { effectiveExtraParams } = applyExtraParamsToAgent(
         activeSession.agent,

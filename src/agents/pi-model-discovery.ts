@@ -5,6 +5,8 @@ import type {
   AuthStorage as PiAuthStorage,
   ModelRegistry as PiModelRegistry,
 } from "@mariozechner/pi-coding-agent";
+import type { OpenClawConfig } from "../config/config.js";
+import { normalizeOptionalSecretInput } from "../utils/normalize-secret-input.js";
 import { ensureAuthProfileStore } from "./auth-profiles.js";
 import { PROVIDER_ENV_API_KEY_CANDIDATES } from "./model-auth-env-vars.js";
 import { resolveEnvApiKey } from "./model-auth-env.js";
@@ -136,9 +138,19 @@ function createAuthStorage(AuthStorageLike: unknown, path: string, creds: PiCred
   return withRuntimeOverride;
 }
 
-function resolvePiCredentials(agentDir: string): PiCredentialMap {
+function resolvePiCredentials(agentDir: string, cfg?: OpenClawConfig): PiCredentialMap {
   const store = ensureAuthProfileStore(agentDir, { allowKeychainPrompt: false });
   const credentials = resolvePiCredentialMapFromStore(store);
+  for (const [provider, providerConfig] of Object.entries(cfg?.models?.providers ?? {})) {
+    const apiKey = normalizeOptionalSecretInput(providerConfig?.apiKey);
+    if (!apiKey || credentials[provider]) {
+      continue;
+    }
+    credentials[provider] = {
+      type: "api_key",
+      key: apiKey,
+    };
+  }
   // pi-coding-agent hides providers from its registry when auth storage lacks
   // a matching credential entry. Mirror env-backed provider auth here so
   // live/model discovery sees the same providers runtime auth can use.
@@ -159,8 +171,8 @@ function resolvePiCredentials(agentDir: string): PiCredentialMap {
 }
 
 // Compatibility helpers for pi-coding-agent 0.50+ (discover* helpers removed).
-export function discoverAuthStorage(agentDir: string): PiAuthStorage {
-  const credentials = resolvePiCredentials(agentDir);
+export function discoverAuthStorage(agentDir: string, cfg?: OpenClawConfig): PiAuthStorage {
+  const credentials = resolvePiCredentials(agentDir, cfg);
   const authPath = path.join(agentDir, "auth.json");
   scrubLegacyStaticAuthJsonEntries(authPath);
   return createAuthStorage(PiAuthStorageClass, authPath, credentials);
