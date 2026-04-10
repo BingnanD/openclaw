@@ -1,0 +1,24 @@
+{
+  "name": "@openclaw/context-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenClaw cross-session context engine plugin",
+  "type": "module",
+  "dependencies": {},
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.26"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

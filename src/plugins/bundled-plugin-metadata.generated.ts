@@ -984,6 +984,50 @@ export const GENERATED_BUNDLED_PLUGIN_METADATA = [
     },
   },
   {
+    dirName: "context-engine",
+    idHint: "context-engine",
+    source: {
+      source: "./index.ts",
+      built: "index.js",
+    },
+    packageName: "@openclaw/context-engine",
+    packageVersion: "0.1.0",
+    packageDescription: "OpenClaw cross-session context engine plugin",
+    packageManifest: {
+      extensions: ["./index.ts"],
+    },
+    manifest: {
+      id: "context-engine",
+      configSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          storeDir: {
+            type: "string",
+            description:
+              "Path to the JSONL context store directory. Default: ~/.openclaw/context-store",
+          },
+          maxEntries: {
+            type: "integer",
+            description: "Maximum entries per agent before cleanup. Default: 5000",
+          },
+          retrievalTopK: {
+            type: "integer",
+            description: "Max entries returned during assembly. Default: 10",
+          },
+          decayHalfLife: {
+            type: "string",
+            description: "Time decay half-life for retrieval ranking. Default: 7d",
+          },
+        },
+      },
+      kind: "context-engine",
+      name: "Cross-Session Context Engine",
+      description: "Unified context storage and retrieval across agent sessions",
+      version: "0.1.0",
+    },
+  },
+  {
     dirName: "copilot-proxy",
     idHint: "copilot-proxy",
     source: {

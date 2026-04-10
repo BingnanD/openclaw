@@ -24,6 +24,7 @@
   "media-runtime",
   "media-understanding-runtime",
   "conversation-runtime",
+  "context-engine",
   "matrix-runtime-heavy",
   "matrix-runtime-shared",
   "thread-bindings-runtime",
