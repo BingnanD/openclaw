@@ -62,7 +62,7 @@ export async function assembleAttemptContextEngine(params: {
   if (!params.contextEngine) {
     return undefined;
   }
-  return await params.contextEngine.assemble({
+  const result = await params.contextEngine.assemble({
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
     messages: params.messages,
@@ -70,6 +70,7 @@ export async function assembleAttemptContextEngine(params: {
     model: params.modelId,
     ...(params.prompt !== undefined ? { prompt: params.prompt } : {}),
   });
+  return result;
 }
 
 export async function finalizeAttemptContextEngineTurn(params: {

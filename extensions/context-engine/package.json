@@ -4,8 +4,11 @@
   "private": true,
   "description": "OpenClaw cross-session context engine plugin",
   "type": "module",
-  "dependencies": {},
+  "dependencies": {
+    "better-sqlite3": "^11.7.0"
+  },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
     "openclaw": "workspace:*"
   },
   "peerDependencies": {

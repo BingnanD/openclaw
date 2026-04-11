@@ -1,166 +1,204 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 
-export type ContextEntry = {
+export type FactEntry = {
   id: number;
   agentId: string;
-  sessionKey: string;
-  role: string;
-  content: string;
+  sourceAgent?: string;
+  sourceSessionKey?: string;
+  targetAgent?: string;
+  category: string;
+  fact: string;
+  keywords: string;
   timestamp: number;
   createdAt: number;
 };
 
-export type ContextStoreConfig = {
-  storeDir: string;
-};
+export type FactInsert = Omit<FactEntry, "id" | "createdAt">;
 
 /**
- * JSONL-backed context store.
- * One .jsonl file per agent (e.g. linxuyuan.jsonl).
- * Each line is a JSON object matching ContextEntry.
- * An auto-increment id counter is tracked per file.
+ * SQLite-backed fact store.
+ * One database file per deployment (~/.openclaw/context-store/facts.db).
  */
-export class ContextStore {
-  private cache = new Map<string, { entries: ContextEntry[]; nextId: number }>();
-  private mtime = new Map<string, number>();
+export class FactStore {
+  private db: Database.Database | null = null;
+  private dbPath: string;
 
-  constructor(private config: ContextStoreConfig) {}
-
-  private agentPath(agentId: string): string {
-    return path.join(this.config.storeDir, `${agentId}.jsonl`);
+  constructor(private storeDir: string) {
+    this.dbPath = path.join(storeDir, "facts.db");
   }
 
-  private loadAgent(agentId: string): { entries: ContextEntry[]; nextId: number } {
-    if (this.cache.has(agentId)) {
-      return this.cache.get(agentId)!;
-    }
-    const filePath = this.agentPath(agentId);
-    let entries: ContextEntry[] = [];
-    let nextId = 1;
+  private getDb(): Database.Database {
+    if (this.db) return this.db;
 
-    if (fs.existsSync(filePath)) {
-      const stat = fs.statSync(filePath);
-      const cachedMtime = this.mtime.get(agentId);
-      if (cachedMtime && stat.mtimeMs <= cachedMtime) {
-        // No change on disk, but we don't have cache — shouldn't happen.
-      } else {
-        const content = fs.readFileSync(filePath, "utf-8");
-        for (const line of content.split("\n")) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try {
-            const entry = JSON.parse(trimmed) as ContextEntry;
-            entries.push(entry);
-            if (entry.id >= nextId) nextId = entry.id + 1;
-          } catch {
-            // Skip malformed lines
-          }
-        }
-        this.mtime.set(agentId, stat.mtimeMs);
-      }
+    if (!fs.existsSync(this.storeDir)) {
+      fs.mkdirSync(this.storeDir, { recursive: true });
     }
 
-    const result = { entries, nextId };
-    this.cache.set(agentId, result);
-    return result;
+    this.db = new Database(this.dbPath);
+    this.db.pragma("journal_mode = WAL");
+    this.db.pragma("synchronous = NORMAL");
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS facts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id TEXT NOT NULL,
+        source_agent TEXT,
+        source_session_key TEXT,
+        target_agent TEXT,
+        category TEXT NOT NULL,
+        fact TEXT NOT NULL,
+        keywords TEXT,
+        timestamp INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_facts_agent ON facts(agent_id);
+      CREATE INDEX IF NOT EXISTS idx_facts_agent_ts ON facts(agent_id, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(agent_id, category);
+    `);
+
+    return this.db;
   }
 
-  private saveAgent(agentId: string, data: { entries: ContextEntry[]; nextId: number }): void {
-    const filePath = this.agentPath(agentId);
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    const tmpPath = filePath + ".tmp";
-    const content = data.entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
-    fs.writeFileSync(tmpPath, content, "utf-8");
-    fs.renameSync(tmpPath, filePath);
-    const stat = fs.statSync(filePath);
-    this.mtime.set(agentId, stat.mtimeMs);
-    this.cache.set(agentId, data);
-  }
-
-  ingest(entry: Omit<ContextEntry, "id" | "createdAt">): void {
-    const data = this.loadAgent(entry.agentId);
-    const newEntry: ContextEntry = {
-      ...entry,
-      id: data.nextId++,
+  insert(entry: FactInsert): void {
+    const db = this.getDb();
+    const stmt = db.prepare(`
+      INSERT INTO facts (agent_id, source_agent, source_session_key, target_agent, category, fact, keywords, timestamp, created_at)
+      VALUES (@agentId, @sourceAgent, @sourceSessionKey, @targetAgent, @category, @fact, @keywords, @timestamp, @createdAt)
+    `);
+    stmt.run({
+      agentId: entry.agentId,
+      sourceAgent: entry.sourceAgent ?? null,
+      sourceSessionKey: entry.sourceSessionKey ?? null,
+      targetAgent: entry.targetAgent ?? null,
+      category: entry.category,
+      fact: entry.fact,
+      keywords: entry.keywords ?? null,
+      timestamp: entry.timestamp,
       createdAt: Date.now(),
-    };
-    data.entries.push(newEntry);
-    this.saveAgent(entry.agentId, data);
+    });
   }
 
-  ingestBatch(entries: Omit<ContextEntry, "id" | "createdAt">[]): void {
+  insertBatch(entries: FactInsert[]): void {
     if (entries.length === 0) return;
-    // Group by agent
-    const byAgent = new Map<string, Omit<ContextEntry, "id" | "createdAt">[]>();
-    for (const e of entries) {
-      const arr = byAgent.get(e.agentId) ?? [];
-      arr.push(e);
-      byAgent.set(e.agentId, arr);
-    }
-    for (const [agentId, agentEntries] of byAgent) {
-      const data = this.loadAgent(agentId);
-      const now = Date.now();
-      for (const e of agentEntries) {
-        data.entries.push({ ...e, id: data.nextId++, createdAt: now });
+    const db = this.getDb();
+    const insert = db.prepare(`
+      INSERT INTO facts (agent_id, source_agent, source_session_key, target_agent, category, fact, keywords, timestamp, created_at)
+      VALUES (@agentId, @sourceAgent, @sourceSessionKey, @targetAgent, @category, @fact, @keywords, @timestamp, @createdAt)
+    `);
+    const insertMany = db.transaction((rows: FactInsert[]) => {
+      for (const e of rows) {
+        insert.run({
+          agentId: e.agentId,
+          sourceAgent: e.sourceAgent ?? null,
+          sourceSessionKey: e.sourceSessionKey ?? null,
+          targetAgent: e.targetAgent ?? null,
+          category: e.category,
+          fact: e.fact,
+          keywords: e.keywords ?? null,
+          timestamp: e.timestamp,
+          createdAt: Date.now(),
+        });
       }
-      this.saveAgent(agentId, data);
-    }
+    });
+    insertMany(entries);
   }
 
-  searchByKeywords(params: {
+  search(params: {
     agentId: string;
     keywords: string[];
     excludeSessionKey?: string;
     limit: number;
     halfLifeMs: number;
-  }): ContextEntry[] {
-    if (params.keywords.length === 0) return [];
-    const data = this.loadAgent(params.agentId);
-    const filtered = data.entries.filter(
-      (e) => !params.excludeSessionKey || e.sessionKey !== params.excludeSessionKey,
-    );
+  }): FactEntry[] {
+    const db = this.getDb();
 
+    // Build dynamic query: match keywords against fact text and keywords field
+    const conditions: string[] = ["agent_id = ?"];
+    const bindValues: (string | number)[] = [params.agentId];
+
+    if (params.excludeSessionKey) {
+      conditions.push("source_session_key != ?");
+      bindValues.push(params.excludeSessionKey);
+    }
+
+    if (params.keywords.length > 0) {
+      const likeClauses = params.keywords.map(() => "(fact LIKE ? OR keywords LIKE ?)");
+      conditions.push(`(${likeClauses.join(" OR ")})`);
+      for (const kw of params.keywords) {
+        bindValues.push(`%${kw}%`);
+        bindValues.push(`%${kw}%`);
+      }
+    }
+
+    const query = `SELECT * FROM facts WHERE ${conditions.join(" AND ")} ORDER BY timestamp DESC LIMIT ?`;
+    bindValues.push(params.limit);
+
+    const rows = db.prepare(query).all(...bindValues) as FactEntry[];
+
+    // Apply time decay scoring
     const now = Date.now();
-    const scored = filtered.map((row) => {
-      const contentLower = row.content.toLowerCase();
-      const matchCount = params.keywords.filter((k) =>
-        contentLower.includes(k.toLowerCase()),
-      ).length;
-      if (matchCount === 0) return { ...row, score: 0 };
-      const ageMs = now - row.timestamp;
-      const decayFactor = Math.pow(0.5, ageMs / params.halfLifeMs);
-      return { ...row, score: matchCount * decayFactor };
-    });
+    return rows
+      .map((row) => ({
+        ...row,
+        score: Math.pow(0.5, (now - row.timestamp) / params.halfLifeMs),
+      }))
+      .sort((a, b) => b.score - a.score);
+  }
 
-    scored.sort((a, b) => b.score - a.score);
-    return scored.filter((r) => r.score > 0).slice(0, params.limit);
+  searchByCategory(params: {
+    agentId: string;
+    categories: string[];
+    excludeSessionKey?: string;
+    limit: number;
+  }): FactEntry[] {
+    const db = this.getDb();
+    const conditions: string[] = ["agent_id = ?"];
+    const bindValues: (string | number)[] = [params.agentId];
+
+    if (params.categories.length > 0) {
+      const placeholders = params.categories.map(() => "?").join(", ");
+      conditions.push(`category IN (${placeholders})`);
+      bindValues.push(...params.categories);
+    }
+
+    if (params.excludeSessionKey) {
+      conditions.push("source_session_key != ?");
+      bindValues.push(params.excludeSessionKey);
+    }
+
+    const query = `SELECT * FROM facts WHERE ${conditions.join(" AND ")} ORDER BY timestamp DESC LIMIT ?`;
+    bindValues.push(params.limit);
+
+    return db.prepare(query).all(...bindValues) as FactEntry[];
   }
 
   countByAgent(agentId: string): number {
-    return this.loadAgent(agentId).entries.length;
+    const db = this.getDb();
+    const row = db.prepare("SELECT COUNT(*) as cnt FROM facts WHERE agent_id = ?").get(agentId) as {
+      cnt: number;
+    };
+    return row.cnt;
   }
 
   cleanup(params: { agentId: string; maxEntries: number }): void {
-    const data = this.loadAgent(params.agentId);
-    if (data.entries.length <= params.maxEntries) return;
-    data.entries.sort((a, b) => b.timestamp - a.timestamp);
-    data.entries = data.entries.slice(0, params.maxEntries);
-    this.saveAgent(params.agentId, data);
-  }
+    const db = this.getDb();
+    const count = this.countByAgent(params.agentId);
+    if (count <= params.maxEntries) return;
 
-  getRecentByAgent(params: { agentId: string; limit: number }): ContextEntry[] {
-    const data = this.loadAgent(params.agentId);
-    const sorted = [...data.entries].sort((a, b) => b.timestamp - a.timestamp);
-    return sorted.slice(0, params.limit);
+    // Delete oldest entries
+    db.prepare(
+      `DELETE FROM facts WHERE id IN (
+        SELECT id FROM facts WHERE agent_id = ? ORDER BY timestamp DESC LIMIT -1 OFFSET ?
+      )`,
+    ).run(params.agentId, params.maxEntries);
   }
 
   close(): void {
-    this.cache.clear();
-    this.mtime.clear();
+    if (this.db) {
+      this.db.close();
+      this.db = null;
+    }
   }
 }

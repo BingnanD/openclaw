@@ -138,39 +138,30 @@ function buildCoordinationEnvelope(params: {
 }
 
 function buildCoordinationPrompt(envelope: ReturnType<typeof buildCoordinationEnvelope>): string {
-  const envelopeJson = JSON.stringify(envelope, null, 2);
-  const deliveryLines: string[] = [];
+  const lines: string[] = [
+    "This is a dedicated A2A coordination session. Treat the [COORDINATION_TASK] user message as the authoritative envelope.",
+    "Execute the task assigned to you in that envelope.",
+  ];
   if (
     (envelope.resultRoute === "group" || envelope.resultRoute === "both") &&
     typeof envelope.replyTarget === "string" &&
     envelope.replyTarget.trim()
   ) {
-    deliveryLines.push(
+    lines.push(
       `- Use the \`message\` tool to post the visible result to \`${envelope.replyTarget}\`.`,
     );
   }
   if (envelope.resultRoute === "coordinator" || envelope.resultRoute === "both") {
-    deliveryLines.push(
+    lines.push(
       "- Keep your final substantive answer in this coordination session so the coordinator can collect it upstream.",
     );
   }
   if (envelope.noPrivateReply) {
-    deliveryLines.push(
+    lines.push(
       "- Do not send a separate natural-language private reply outside the protocol targets.",
     );
   }
-  return [
-    "Coordination session context:",
-    "- This session is a dedicated A2A coordination session, not a normal chat thread.",
-    "- Treat the JSON envelope below as authoritative protocol state.",
-    "- Execute only the delegate task assigned to you.",
-    ...deliveryLines,
-    "",
-    "[COORDINATION_ENVELOPE]",
-    "```json",
-    envelopeJson,
-    "```",
-  ].join("\n");
+  return lines.join("\n");
 }
 
 function resolveLatestAssistantReply(messages: unknown[]): string | undefined {

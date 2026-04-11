@@ -692,6 +692,7 @@ export async function runEmbeddedAttempt(
     });
     const systemPromptOverride = createSystemPromptOverride(appendPrompt);
     let systemPromptText = systemPromptOverride();
+    let contextPromptPrefix: string | undefined;
 
     const sessionLock = await acquireSessionWriteLock({
       sessionFile: params.sessionFile,
@@ -1120,6 +1121,14 @@ export async function runEmbeddedAttempt(
             }
             if (assembled.messages !== activeSession.messages) {
               activeSession.agent.replaceMessages(assembled.messages);
+              log.debug(
+                `context engine: replaced messages with assembled (${assembled.messages.length} msgs)`,
+              );
+            }
+            // Prepend cross-session context to the user prompt so it's part of the
+            // actual question text the LLM processes.
+            if (typeof (assembled as Record<string, unknown>)._promptPrefix === "string") {
+              contextPromptPrefix = (assembled as Record<string, unknown>)._promptPrefix as string;
             }
             if (assembled.systemPromptAddition) {
               systemPromptText = prependSystemPromptAddition({
@@ -1371,6 +1380,11 @@ export async function runEmbeddedAttempt(
             preserveExactPrompt: heartbeatPrompt,
           },
         );
+        // Prepend cross-session context to the user prompt so it's part of the
+        // actual question text the LLM processes.
+        if (contextPromptPrefix) {
+          effectivePrompt = `${contextPromptPrefix}\n\n${effectivePrompt}`;
+        }
         const hookCtx = {
           agentId: hookAgentId,
           sessionKey: params.sessionKey,
