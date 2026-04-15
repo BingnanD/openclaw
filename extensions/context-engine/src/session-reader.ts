@@ -128,17 +128,72 @@ export function readRecentMessages(
 /**
  * Extract plain text from an AgentMessage's content array.
  * Skips thinking, toolCall, and other non-text blocks.
+ * For coordination tasks, extracts only the human-readable task description.
  */
 function extractTextContent(msg: { content?: unknown }): string {
   const content = msg.content;
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
 
-  return content
+  const texts = content
     .filter(
       (b): b is { type: "text"; text: string } =>
         !!b && typeof b === "object" && (b as { type?: string }).type === "text",
     )
     .map((b) => b.text)
     .join("\n");
+
+  // Clean up coordination task JSON — extract just the task description
+  if (texts.includes("[COORDINATION_TASK]")) {
+    return simplifyCoordinationTask(texts);
+  }
+
+  return texts;
+}
+
+/**
+ * Simplify a coordination task message to just the human-readable parts.
+ * Strips the raw JSON envelope and keeps task title/objective/task content.
+ */
+function simplifyCoordinationTask(text: string): string {
+  try {
+    const jsonStart = text.indexOf("{", text.indexOf("[COORDINATION_TASK]"));
+    if (jsonStart === -1) return text;
+
+    let depth = 0;
+    let jsonEnd = jsonStart;
+    for (let i = jsonStart; i < text.length; i++) {
+      if (text[i] === "{") depth++;
+      if (text[i] === "}") depth--;
+      if (depth === 0) {
+        jsonEnd = i + 1;
+        break;
+      }
+    }
+
+    const json = text.slice(jsonStart, jsonEnd);
+    const parsed = JSON.parse(json);
+
+    const parts: string[] = [];
+    const prefix = text.slice(0, jsonStart).trim();
+
+    const task = parsed.task as { title?: string; objective?: string } | undefined;
+    if (task?.title) parts.push(`[协调任务: ${task.title}]`);
+    if (task?.objective) parts.push(task.objective);
+    if (!task?.title && !task?.objective && parsed.task) {
+      parts.push(JSON.stringify(parsed.task, null, 2).slice(0, 300));
+    }
+
+    // Keep metadata like timestamp and coordinator info (but strip injected context)
+    const metaLines = prefix
+      .split("\n")
+      .filter((l) => l.trim().length > 0 && !l.includes("[以下是你之前"));
+    if (metaLines.length > 0) {
+      parts.unshift(metaLines.join(" "));
+    }
+
+    return parts.join("\n").slice(0, 500);
+  } catch {
+    return text.slice(0, 500);
+  }
 }

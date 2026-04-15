@@ -82,35 +82,47 @@ export function parseDecayHalfLife(value: string): number {
 }
 
 /**
- * Score session messages by keyword match and time decay.
- * Returns messages sorted by score, limited to maxTotal.
+ * Score session messages by time decay, with keyword match as a boost factor.
+ * All messages are included — keyword matching boosts relevance but doesn't filter.
+ * Non-keyword-matching messages are capped to avoid drowning out relevant results.
  */
 export function filterAndScore(
   messages: SessionMessage[],
   prompt: string,
   halfLifeMs: number,
   maxTotal: number = 15,
+  maxNoMatch: number = 3,
 ): (SessionMessage & { score: number })[] {
   const keywords = extractKeywords(prompt);
+  const now = Date.now();
 
-  const scored = messages
-    .map((msg) => {
-      let score = 1.0; // base recency score
-      if (keywords.length > 0) {
-        const matchCount = keywords.filter((kw) => msg.content.includes(kw)).length;
-        if (matchCount === 0) return null; // no keyword match, skip
-        score = matchCount / keywords.length; // relevance ratio
+  // Separate into keyword-match and no-match groups
+  const matched: (SessionMessage & { score: number })[] = [];
+  const noMatch: (SessionMessage & { score: number })[] = [];
+
+  for (const msg of messages) {
+    const decay = Math.pow(0.5, (now - msg.timestamp) / halfLifeMs);
+
+    if (keywords.length > 0) {
+      const matchCount = keywords.filter((kw) => msg.content.includes(kw)).length;
+      if (matchCount > 0) {
+        const relevance = matchCount / keywords.length;
+        matched.push({ ...msg, score: decay * (0.5 + 0.5 * relevance) });
+        continue;
       }
-      // Apply time decay
-      const now = Date.now();
-      const decay = Math.pow(0.5, (now - msg.timestamp) / halfLifeMs);
-      score *= decay;
+    }
+    noMatch.push({ ...msg, score: decay * 0.3 });
+  }
 
-      return { ...msg, score };
-    })
-    .filter((m): m is SessionMessage & { score: number } => m !== null);
+  // Take top noMatch messages (most recent non-matching)
+  noMatch.sort((a, b) => b.score - a.score);
+  const topNoMatch = noMatch.slice(0, maxNoMatch);
 
-  return scored.sort((a, b) => b.score - a.score).slice(0, maxTotal);
+  // Combine and sort
+  const combined = [...matched, ...topNoMatch];
+  combined.sort((a, b) => b.score - a.score);
+
+  return combined.slice(0, maxTotal);
 }
 
 /**
