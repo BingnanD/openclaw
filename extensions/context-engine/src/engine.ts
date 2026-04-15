@@ -2,19 +2,30 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { delegateCompactionToRuntime } from "openclaw/plugin-sdk/context-engine";
 import type { ContextEngine, ContextEngineInfo } from "openclaw/plugin-sdk/context-engine";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/plugin-entry";
-import { formatContextForPrompt, parseDecayHalfLife } from "./retrieval.js";
+import {
+  formatContextForPrompt,
+  formatSessionContextForPrompt,
+  parseDecayHalfLife,
+  extractKeywords,
+  filterAndScore,
+} from "./retrieval.js";
+import { discoverSessions, readRecentMessages } from "./session-reader.js";
 import type { FactEntry, FactInsert } from "./store.js";
 import { FactStore } from "./store.js";
 
 const DEFAULT_MAX_ENTRIES = 5000;
 const DEFAULT_RETRIEVAL_TOP_K = 10;
 const DEFAULT_DECAY_HALF_LIFE = "7d";
+const DEFAULT_MAX_MESSAGES_PER_SESSION = 10;
+const DEFAULT_MAX_TOTAL_MESSAGES = 15;
 
 type PluginConfig = {
   storeDir?: string;
   maxEntries?: number;
   retrievalTopK?: number;
   decayHalfLife?: string;
+  maxMessagesPerSession?: number;
+  maxTotalMessages?: number;
 };
 
 function resolveStoreDir(cfg?: OpenClawConfig): string {
@@ -31,6 +42,8 @@ function resolvePluginConfig(cfg?: OpenClawConfig): Required<PluginConfig> {
     maxEntries: pluginCfg?.maxEntries ?? DEFAULT_MAX_ENTRIES,
     retrievalTopK: pluginCfg?.retrievalTopK ?? DEFAULT_RETRIEVAL_TOP_K,
     decayHalfLife: pluginCfg?.decayHalfLife ?? DEFAULT_DECAY_HALF_LIFE,
+    maxMessagesPerSession: pluginCfg?.maxMessagesPerSession ?? DEFAULT_MAX_MESSAGES_PER_SESSION,
+    maxTotalMessages: pluginCfg?.maxTotalMessages ?? DEFAULT_MAX_TOTAL_MESSAGES,
   };
 }
 
@@ -81,7 +94,6 @@ function tryParseCoordinationTask(content: string): CoordinationEnvelope | null 
   const jsonStart = content.indexOf("{", idx);
   if (jsonStart === -1) return null;
 
-  // Find matching closing brace
   let depth = 0;
   let jsonEnd = jsonStart;
   for (let i = jsonStart; i < content.length; i++) {
@@ -107,7 +119,6 @@ function tryParseCoordinationTask(content: string): CoordinationEnvelope | null 
 }
 
 function extractKeywordsFromFact(text: string): string {
-  // Extract Chinese contiguous character sequences (2+ chars) as keywords
   const chinesePhrases = text.match(/[\u4e00-\u9fff]{2,}/g) ?? [];
   const latinWords = text
     .replace(/[^a-zA-Z0-9\u4e00-\u9fff\s]/g, " ")
@@ -127,7 +138,6 @@ function factsFromCoordinationEnvelope(
   const coordinatorAgentId = envelope.coordinator?.agentId;
   const facts: FactInsert[] = [];
 
-  // Extract human-readable task content instead of storing raw JSON
   const task = envelope as {
     task?: { title?: string; objective?: string; expectedOutput?: string };
   };
@@ -137,7 +147,6 @@ function factsFromCoordinationEnvelope(
   if (task?.task?.expectedOutput) taskParts.push(`期望输出: ${task.task.expectedOutput}`);
   const taskSummary = taskParts.join("\n") || content.slice(0, 500);
 
-  // Store the coordination task for the delegate
   if (delegateAgentId) {
     facts.push({
       agentId: delegateAgentId,
@@ -151,7 +160,6 @@ function factsFromCoordinationEnvelope(
     });
   }
 
-  // Also store for the coordinator's perspective
   if (coordinatorAgentId && envelope.coordinationId) {
     const summary = `向 ${delegateAgentId ?? "未知"} 发送了协调任务 (${envelope.mode ?? "dispatch"}): ${taskSummary.slice(0, 200)}`;
     facts.push({
@@ -177,8 +185,6 @@ function messageTimestamp(msg: AgentMessage): number {
   return Date.now();
 }
 
-// Phrases that indicate the assistant has no knowledge about a topic.
-// These should not be stored as facts.
 const DENIAL_PATTERNS = [
   "不知道",
   "我没有看到",
@@ -211,7 +217,7 @@ export class CrossSessionContextEngine implements ContextEngine {
   readonly info: ContextEngineInfo = {
     id: "context-engine",
     name: "Cross-Session Context Engine",
-    version: "0.2.0",
+    version: "0.3.0",
   };
 
   private store: FactStore | null = null;
@@ -253,7 +259,6 @@ export class CrossSessionContextEngine implements ContextEngine {
     const ts = messageTimestamp(params.message);
     const role = (params.message as { role?: string }).role ?? "unknown";
 
-    // Check for coordination dispatch
     const envelope = tryParseCoordinationTask(content);
     if (envelope) {
       const facts = factsFromCoordinationEnvelope(
@@ -267,15 +272,11 @@ export class CrossSessionContextEngine implements ContextEngine {
       return { ingested: facts.length > 0 };
     }
 
-    // For non-coordination messages, check if assistant response contains
-    // factual information worth remembering (heuristic: short, declarative)
     if (role === "assistant") {
       const trimmed = content.trim();
-      // Skip tool calls, thinking, and very long responses
       if (trimmed.includes("toolCall") || trimmed.includes("thinking") || trimmed.length > 500) {
         return { ingested: false };
       }
-      // Short confirmations are worth storing
       if (!isDenialResponse(trimmed) && trimmed.length > 5 && trimmed.length <= 300) {
         this.getStore().insert({
           agentId,
@@ -367,43 +368,71 @@ export class CrossSessionContextEngine implements ContextEngine {
       return { messages: params.messages, estimatedTokens: 0 };
     }
 
-    // Extract Chinese keywords from prompt for matching
-    const chinesePhrases = params.prompt.match(/[\u4e00-\u9fff]{2,}/g) ?? [];
     const halfLifeMs = parseDecayHalfLife(this.config.decayHalfLife);
+    const maxPerSession = this.config.maxMessagesPerSession;
+    const maxTotal = this.config.maxTotalMessages;
 
-    // Strategy: First try keyword-based search, fall back to category-based retrieval
-    let results: FactEntry[] = [];
+    // Step 1: Discover all active sessions for this agent
+    const sessions = discoverSessions(agentId);
 
-    if (chinesePhrases.length > 0) {
-      results = this.getStore().search({
-        agentId,
-        keywords: chinesePhrases.slice(0, 6),
-        excludeSessionKey: currentSessionKey,
-        limit: this.config.retrievalTopK,
-        halfLifeMs,
-      });
+    // Step 2: Read recent messages from each session (exclude current)
+    const allMessages = [];
+    for (const session of sessions) {
+      if (session.id === params.sessionId) continue;
+      const recent = readRecentMessages(session.file, session.id, maxPerSession);
+      allMessages.push(...recent);
     }
 
-    // If keyword search found nothing, fall back to coordination tasks
-    if (results.length === 0) {
-      results = this.getStore().searchByCategory({
-        agentId,
-        categories: ["coordination_task"],
-        excludeSessionKey: currentSessionKey,
-        limit: this.config.retrievalTopK,
-      });
+    // Step 3: Filter by keyword relevance and score by time decay
+    let relevant = filterAndScore(allMessages, params.prompt, halfLifeMs, maxTotal);
+
+    // Step 4: Fall back to SQLite facts if no session messages matched
+    if (relevant.length === 0) {
+      const chinesePhrases = params.prompt.match(/[\u4e00-\u9fff]{2,}/g) ?? [];
+      if (chinesePhrases.length > 0) {
+        const sqliteResults = this.getStore().search({
+          agentId,
+          keywords: chinesePhrases.slice(0, 6),
+          excludeSessionKey: currentSessionKey,
+          limit: this.config.retrievalTopK,
+          halfLifeMs,
+        });
+        if (sqliteResults.length === 0) {
+          const coordinationTasks = this.getStore().searchByCategory({
+            agentId,
+            categories: ["coordination_task"],
+            excludeSessionKey: currentSessionKey,
+            limit: this.config.retrievalTopK,
+          });
+          if (coordinationTasks.length > 0) {
+            const contextText = formatContextForPrompt(coordinationTasks, currentSessionKey);
+            return {
+              messages: params.messages,
+              estimatedTokens: Math.ceil(contextText.length / 4),
+              _promptPrefix: `[以下是你之前在其他会话中的相关信息，请用来回答问题]\n\n${contextText}`,
+            };
+          }
+        } else {
+          const contextText = formatContextForPrompt(sqliteResults, currentSessionKey);
+          return {
+            messages: params.messages,
+            estimatedTokens: Math.ceil(contextText.length / 4),
+            _promptPrefix: `[以下是你之前在其他会话中的相关信息，请用来回答问题]\n\n${contextText}`,
+          };
+        }
+      }
     }
 
-    if (results.length === 0) {
+    if (relevant.length === 0) {
       return { messages: params.messages, estimatedTokens: 0 };
     }
 
-    const contextText = formatContextForPrompt(results, currentSessionKey);
+    const contextText = formatSessionContextForPrompt(relevant, currentSessionKey);
 
     return {
       messages: params.messages,
       estimatedTokens: Math.ceil(contextText.length / 4),
-      _promptPrefix: `[以下是你之前在其他会话中的相关信息，请用来回答问题]\n\n${contextText}`,
+      _promptPrefix: `[以下是你之前在其他会话中的对话内容，请用来回答问题]\n\n${contextText}`,
     };
   }
 
@@ -479,7 +508,6 @@ export class CrossSessionContextEngine implements ContextEngine {
       this.getStore().insertBatch(facts);
     }
 
-    // Periodic cleanup
     if (this.getStore().countByAgent(agentId) > this.config.maxEntries * 1.2) {
       this.getStore().cleanup({ agentId, maxEntries: this.config.maxEntries });
     }

@@ -5,6 +5,7 @@
   "description": "OpenClaw cross-session context engine plugin",
   "type": "module",
   "dependencies": {
+    "@node-rs/jieba": "^1.10.4",
     "better-sqlite3": "^11.7.0"
   },
   "devDependencies": {
