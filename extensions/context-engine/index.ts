@@ -3,8 +3,8 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { CrossSessionContextEngine } from "./src/engine.js";
 
 export { CrossSessionContextEngine } from "./src/engine.js";
-export { FactStore } from "./src/store.js";
-export { formatContextForPrompt } from "./src/retrieval.js";
+export { extractKeywords, parseDecayHalfLife } from "./src/retrieval.js";
+export { discoverSessions, readRecentMessages } from "./src/session-reader.js";
 
 export default definePluginEntry({
   id: "context-engine",

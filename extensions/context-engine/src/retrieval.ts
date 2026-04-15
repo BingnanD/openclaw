@@ -1,6 +1,5 @@
 import { cut } from "@node-rs/jieba";
 import type { SessionMessage } from "./session-reader.js";
-import type { FactEntry } from "./store.js";
 
 // Stop words to filter out from keyword matching
 const STOP_WORDS = new Set([
@@ -65,28 +64,6 @@ export function extractKeywords(prompt: string): string[] {
   }
 
   return [...keywords];
-}
-
-export function formatContextForPrompt(
-  entries: FactEntry[],
-  currentSessionKey: string | undefined,
-): string {
-  if (entries.length === 0) return "";
-
-  const lines = ["以下是你之前在其他会话中提到的相关信息：", ""];
-
-  for (const entry of entries) {
-    const timeStr = new Date(entry.timestamp).toISOString().replace("T", " ").slice(0, 19);
-    const sourceLabel = entry.sourceAgent ? `${entry.sourceAgent}` : "未知来源";
-    const categoryLabel = entry.category === "coordination_task" ? "协调任务" : entry.category;
-    const preview = entry.fact.length > 500 ? entry.fact.slice(0, 500) + "..." : entry.fact;
-    lines.push(`[${timeStr}] ${sourceLabel} (${categoryLabel}):`);
-    lines.push(preview);
-    lines.push("");
-  }
-
-  lines.push("请根据以上信息回答问题。");
-  return lines.join("\n");
 }
 
 export function parseDecayHalfLife(value: string): number {
